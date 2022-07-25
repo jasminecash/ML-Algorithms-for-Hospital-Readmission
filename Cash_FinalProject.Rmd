@@ -1,0 +1,379 @@
+---
+title: Development and Validation of a Random Forest Predictive Model on Hospital
+  Readmission
+author: "Jasmine Cash"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Introduction
+
+Hospital readmission rates are costly events to patient and medical institutions alike, and reflect inadequate patient outcomes (Epstein et al., 2011). In response to this burden, a number of programs (e.g., the Hospital Readmission Reduction Program) and prediction models have been created and implemented to lower the risk of hospital readmissions. The latter, in particular, has received growing interest to aid in reducing costs and improving care. One of those prediction models is the LACE index. The LACE index uses four variables to predict 30-day hospital readmission and risk of death: length of stay (L), acuity of the admission (A), comorbidity of the patient (C) and emergency department use in the duration of 6 months before admission (E) (Van Walraven et al., 2010). Despite the LACE index demonstrating good internal and external validity (Van Walraven et al., 2010), more recent studies have either demonstrated that other predictive models are superior (Robinson & Hudali et al., 2017), or may not perform as well in certain populations (Wang et al., 2014). While the LACE index has been a standard of predicting hospital readmissions, in order to continue to improve upon overall quality of care for patients and relieve private and public payer burdens, it is imperative to continue to explore methods to improve upon hospital readmission prediction models.
+
+There are a plethora of statistical modeling techniques available to develop and validate a hospital readmission prediction model. Ridge regression, is a type of linear regression that aims to reduce model complexity by reducing the coefficients of predicotrs with little affect on the outcome of interest, towards zero. In this way, ridge regression helps to reduce overfitting of the model, and can provide stakeholders with easier to understand models. Random forest is a machine learning technique that evaluates the performance of a specified number of independently generated decision trees from subsets of a given dataset, and presents the average of those decision trees with an improved predicitve accuracy. XG Boost is another type of machine learning technique, that in contrast to random forest, builds one decision tree at a time, and sequentially works through each tree taking into account data from the previous tree. From these trees, the algorithm is able to yield greater predicitve ability.
+
+All three of the aforementioned modeling techniques have been used to help predict hospital readmissions (Huang et al., 2021), however, few reports compare the performance of the statistical models themselves. Further, given the financial burden of hospital readmissions, and the uneven perfomance of the LACE index, it is also worthwhile to compare these modeling techniques to a standard of predicitive modeling. Therefore, the purpose of this report was to develop and validate three predictive models using ridge regression, random forest, and XG Boost, to predict 30-day hospital readmission, and compare the performance of those models to the LACE index.
+
+# Methods
+
+## Data Source
+
+All statistical modelling was performed on a dataset containing 65 total variables on 30,419 inpatient encounters (each row representing a single encounter), in individuals admitted to the largest hospital of a regional health system.
+
+## Outcome
+
+A readmission event consisted of two encounters: the "index" encounter and the "readmission" encounter. All non-expired inpatient discharged were potential index encounters (excluding discharge to hospice, etc), and may or may not be followed by a subsequent readmission encounter. A readmission encounter was defined as being if the row (as an index encounter) had a readmission event within 30 days of discharge. This variable, or "ReadmitFLG", was therefore used as the outcome variable. To compare each of the four models, the areas under each receiver operating characteristics curve (ROC) was compared, where higher values were indicated models with better discrimitive ability. The model with the greatest area under the curve (AUC) was then used on a hold out test data set, without the outcome of interest "ReamitFLG". These predictor values were then exported to a separate R file.
+
+## Predictors
+
+Tables 1 contains a list and description of predictors used for modeling.
+
+```{r echo=FALSE, results='asis'}
+library(knitr)
+library(readxl)
+Predictors <- read_excel("/Users/jjcash/Documents/PhD/PhD-Year2/HIN-710/Predictors.xlsx")
+kable(Predictors, caption="Table 1: General predictors used in statistical models")
+
+```
+
+Table 2 contains a list of the Elixhauser Comorbidity Categories also used for modeling.
+
+```{r echo=FALSE, results='asis'}
+library(knitr)
+library(readxl)
+Elixhauser <- read_excel("/Users/jjcash/Documents/PhD/PhD-Year2/HIN-710/Elixhauser.xlsx")
+kable(Elixhauser, caption="Table 2: Elixhauser comorbidity category predicors used in models")
+```
+
+## Statistical Analysis
+
+All analyses were done in R (R Core Team, 2022). Data were first loaded into the global environment. The performance of the LACE was first evaluated using ROCR (Sing et al., 2005)
+
+```{r echo=TRUE, message=FALSE}
+
+# Load required package
+
+library(ROCR) #To calculate AUC and plot ROC curves
+load("~/Documents/PhD/PhD-Year2/HIN-710/readmit.Rdata")
+
+# Show the performance of LACE on the training data
+
+ROCRpred_LACE <- prediction(predictions = readmit$LACEScoreNBR,
+                            labels = readmit$ReadmitFLG)
+ROCRperf_LACE <- performance(prediction.obj = ROCRpred_LACE,
+                             measure = "tpr",
+                            x.measure = "fpr")
+plot(ROCRperf_LACE, col = "blue")
+abline(a=0, b=1)
+```
+
+Figure 1 demonstrates the model's ability to detect true positives, that is the LACE index's ability to correctly predict 30-day readmission. We then determined the area under the ROC curve. The resulting value of 0.73 was used and compared to the subsequent three model's performance.
+
+```{r echo=TRUE, message=TRUE}
+# Calculate the AUC for LACE
+
+ROCRpred_LACE_AUC <- performance(prediction.obj = ROCRpred_LACE,
+                                 measure = "auc")
+ROCRpred_LACE_AUC@y.values 
+
+```
+
+The variables xyz were then removed due to their direct relationship to readmission. Their inclusion may have caused over fitting of the models. The remaining x varibale were all included as predicotrs of readmission in the model.
+
+```{r echo=TRUE, message=FALSE}
+#Remove variables directly related to our outcome of interest, readmission. 
+
+readmit <- readmit[,-c(5,6,45,55:63)]
+```
+
+### Ridge Regression
+
+Ridge regression was performed using the following packages: glmnet (Friedman et al., 2010), ISLR (James et al., 2021), Matrix (Bates & Maechler, 2021), and caret (Kuhn, 2022). Descriptions of each package's use in modeling procedures are provided within the code below. Ridge regression cannot be performed with missing values, therefore any missing values were then omitted from the dataset, however, no missing values were detected. The data were then split into training and test sets, where 80% of the data were used for training for all model testings (24336 observations used for training, 6083 observations used for testing).
+
+```{r echo=TRUE, message=FALSE}
+#Load packages for ridge regression
+
+library(glmnet) #For prediction, plotting, and cross validation  
+library(Matrix) #Create sparse matrices
+library(caret) #To easily split data into test/training sets
+
+#Ridge requires no missing values
+
+#readmit <- na.omit(readmit)
+
+#Split the data into test and train sets
+
+set.seed(2021)
+training_indexes <- createDataPartition(y = readmit$ReadmitFLG,
+                                        p = 0.8, list = F)
+readmit.train <- readmit[training_indexes,] 
+readmit.test <- readmit[-training_indexes,] 
+```
+
+The outcome and predictor vectors were built using the training and test datasets.
+
+```{r echo=TRUE, message=FALSE}
+# Build the outcome vector for the train set
+
+y.train <- readmit.train$ReadmitFLG
+
+# Build the predictor variables using the sparse.model.matrix() method 
+
+x.train <- sparse.model.matrix(object = ReadmitFLG ~ . -1, data = readmit.train)
+x.test <- sparse.model.matrix(object = ReadmitFLG ~ . -1, data = readmit.test)
+```
+
+Using these vectors, a ridge regression model was fit via cross-validation.
+
+```{r echo=TRUE, results='hide'}
+
+# Fit ridge via cross-validation
+
+cv.ridge <- cv.glmnet(x=x.train, y=y.train, alpha=0, family="binomial")
+
+```
+
+### Random Forest
+
+A random forest model was created using the following packages: rpart (Therneau & Atkinson, 2022) and ranger (Wright & Ziegler, 2017). Descriptions of each package's use in modeling procedures are provided within the code below. The model was trained using 500 individual decision trees, with five variables to consider at each tree split.
+
+```{r echo=TRUE, results='hide'}
+# Load in packages
+library(rpart) # Builds classification and regression trees
+library(ranger) # Implements random forest model
+
+rf1 <- ranger(formula = ReadmitFLG ~ .,
+              data = readmit.train,
+              num.trees = 500,
+              mtry = 5,
+              importance = "impurity",
+              probability = TRUE,
+              write.forest = TRUE)
+
+```
+
+### XG Boost
+
+The XG Boost algorithm utilizes the same kind of vectors (i.e., sparse.model.matrix) from the ridge regression modeling to transform the training and test data, therefore these same vectors were used. XG Boost requires that our outcome variable be a numeric one, which was not the case originall in our dataset. This required the transformation of the string variables, where "Readmit" was coded as 1, and "No Readmit" was coded as a 0 in our training data. The model was then fit using XG Boost, where the learning rate was set to eta=0.3, and 200 sequential trees were considered for learning.
+
+```{r echo=TRUE, results='hide'}
+
+library(xgboost)
+
+# Change outcome variable to 0 or 1
+
+y.trainxg <- ifelse(test = readmit.train$ReadmitFLG == "Readmit",
+                  yes = 1,
+                  no = 0)
+
+# Train the model on training data
+
+xgb1 <- xgboost(label = y.trainxg,
+                data = x.train,
+                objective = "binary:logistic",
+                eta = 0.3,
+                nrounds = 200)
+
+```
+
+# Results
+
+## Ridge Regression
+
+The ridge regression model was first plotted (Figure 2) to identify two particular models and their lambda values (represented by the two vertical lines).The simpler model (the one with higher bias and less variance), as identified by the line on the right, was chosen because the average error that is within 1 standard deviation of the lowest-error model's average error.
+
+```{r echo=TRUE}
+# Plot of model
+
+plot(cv.ridge)
+
+#Coefficients of the smallest-yet-similar-error model
+
+coef(object = cv.ridge, s = 'lambda.1se')
+```
+
+The coefficients using this smallest, but similar error model were then calculated.Using these coefficients, predictions were made on the test data.
+
+```{r echo=TRUE, results='hide', message=FALSE}
+
+#Coefficients of the smallest-yet-similar-error model
+
+coef(object = cv.ridge, s = 'lambda.1se')
+
+# Make predictions on the test data using the particular model from the cv.ridge object
+
+preds <- predict(object = cv.ridge, newx = x.test , s = 'lambda.1se', type = "response")
+
+```
+
+Lastly, the model's performance was then calculated using the area under the ROC curve, which was determined to be 0.785.
+
+```{r echo=TRUE, message=TRUE}
+ROCRpred_ridgetest <- prediction(predictions = preds,
+                           labels = readmit.test$ReadmitFLG)
+ROCRperf_ridgetest <- performance(prediction.obj = ROCRpred_ridgetest,
+                          measure = "auc")
+
+
+#Calculate AUC for test data
+
+ROCRperf_ridgetest@y.values 
+```
+
+## Random Forest
+
+Predictions were calculated on the test data in the form of probabilities for readmission.
+
+```{r echo=TRUE, results='hide'}
+
+library(lattice) # Data visualization
+
+# Make predictions on the test data
+
+preds_rf1 <- predict(object = rf1,
+                     data = readmit.test,
+                     type = "response")
+
+# Get the probabilities for Readmission
+head(preds_rf1$predictions) 
+preds_rf1$predictions[,"Readmit"] 
+
+```
+
+Using random forest, emergency visits in the last 180 days (EDVisitsCNT) was determined to be the most important predictor of hospital readmission, while paralysis (ElixParalysisFLG) was the least important (Figure 3).
+
+```{r echo=TRUE, message=FALSE}
+# Ordered variable importance plot
+
+importance(rf1)
+rf1_imp <- importance(rf1)[order(importance(rf1))] 
+dotplot(rf1_imp)
+```
+
+The model performance was then evaluated by calculating the area under the ROC curve (Figure 4), which was determined to be 0.796.
+
+```{r echo=TRUE, message=FALSE}
+
+# Plot the ROC using predictions
+
+ROCRpred_rf1 <- prediction(predictions = preds_rf1$predictions[,"Readmit"],
+                           labels = readmit.test$ReadmitFLG)
+ROCRperf_rf1 <- performance(prediction.obj = ROCRpred_rf1,
+                            measure = "tpr",
+                            x.measure = "fpr")
+plot(ROCRperf_rf1, col = "blue")
+abline(a=0, b=1)
+
+# Calculate the AUC
+ROCRperf_rf1_auc <- performance(prediction.obj = ROCRpred_rf1,
+                                measure = "auc")
+ROCRperf_rf1_auc@y.values 
+```
+
+## XGBoost
+
+Predictions were calculated on the test data in the form of probabilities for readmission.
+
+```{r echo=TRUE, results='hide'}
+# Make predictions on the test set
+
+preds_xgb1 <- predict(object = xgb1, newdata = x.test)
+head(preds_xgb1)
+```
+
+Using XG Boost, patient the readmisison index (IndexReadmitFLG) was determined to be the most important predictor of hospital readmission, while prior hereditary and degenerative nervous system conditions (CCSDXMultiLevel02DSCHereditary) was the least important predictor (Figure 5).
+
+```{r echo=TRUE, results='asis'}
+
+xgb1_imp <- xgb.importance(feature_names = colnames(x.train), model = xgb1)
+xgb.plot.importance(xgb1_imp)
+```
+
+The model performance was then evaluated by calculating the area under the ROC curve (Figure 6), which was determined to be 0.772.
+
+```{r echo=TRUE, message=FALSE}
+
+# Plot the ROC using predictions
+
+ROCRpred_xgb1 <- prediction(predictions = preds_xgb1,
+                            labels = readmit.test$ReadmitFLG)
+ROCRperf_xgb1 <- performance(prediction.obj = ROCRpred_xgb1,
+                             measure = "tpr",
+                             x.measure = "fpr")
+plot(ROCRperf_xgb1, col = "blue")
+abline(a=0, b=1)
+
+# Calculate AUC
+
+ROCRperf_xgb1_auc <- performance(prediction.obj = ROCRpred_xgb1,
+                                 measure = "auc")
+ROCRperf_xgb1_auc@y.values
+
+
+```
+
+## Applying Chosen Model to Test Data
+
+The random forest model produced the highest AUC value, and was therefore used to predict readmission on the hold out test data set. This data set, like the original dataset, included LACE predictors, and was therefore removed. Hospital readmission using the random forest model was then performed and saved in a vector file.
+
+```{r echo=TRUE, message=FALSE}
+# Load hold out set
+
+load("~/Documents/PhD/PhD-Year2/HIN-710/test_data_for_project.Rdata")
+
+# Remove LACE variables
+
+test_data_for_project <- test_data_for_project[,-c(5,6)]
+
+# Use random forest model for predictions and save the vector file
+
+test_preds <- predict(object = rf1, data = test_data_for_project,
+                      type = "response")
+save(test_preds,
+     file = "test_predictions_JasmineCash.Rdata")
+```
+
+# Discussion
+
+The purpose of this report was two-fold: 1) develop and validate a model that surpasses the performance (area under the ROC curve) of the LACE model, and 2 determine which of those models (ridge regression, random forest, or XG boost) performed the best based on the highest area under the ROC curve value. In addressing the first purpose, all three models had higher area under the curve values than the LACE. With regards to the second purpose, the random forest model had the greatest AUC of the three models.
+
+## Limitations
+
+A major limitation of tthis report was that only AUC was used as a marker of model performance. AUC of a ROC plot is indicative of a model's ability to predict true positives, or in this case each model's ability to correctly predict a readmission event, when there was a true readmission event. While AUC is a widely used method of model performance, given the closeness of the AUC values themselves for each model (ridge regression: 0.785, random forest: 0.796, and XG Boost: 0.772), it would be worthwhile to include other methods of model performance such as a Brier's score or Tjur's r-squared.
+
+A second limitation of this report is the possible lack of generalizability of our results. Traditionally, machine learning models for predicting hospital admission use data specifically from their hospital's data repositories, thus yielding usable models for the purposes of that hospital site (Ryu et al., 2022). However, as health care systems continue to expand, certain hospitals may have site-specific factors that contribute to hospital readmission that may not translate to other sites. In turn, a model's performance for one hospital site may differ at another. Future predictive models must use caution when trying to extrapolate models across hospital sites.
+
+
+# References
+
+Epstein AM, Jha AK, Orav EJ. The Relationship between Hospital Admission Rates and Rehospitalizations. N Engl J Med. 2011;365(24):2287-2295. <doi:10.1056/NEJMsa1101942>
+
+van Walraven C, Dhalla IA, Bell C, et al. Derivation and validation of an index to predict early death or unplanned readmission after discharge from hospital to the community. CMAJ. 2010;182(6):551-557. <doi:10.1503/cmaj.091117>
+
+Robinson R, Hudali T. The HOSPITAL score and LACE index as predictors of 30 day readmission in a retrospective study at a university-affiliated community hospital. PeerJ. 2017;5:e3137. <doi:10.7717/peerj.3137>
+
+Wang H, Robinson RD, Johnson C, et al. Using the LACE index to predict hospital readmissions in congestive heart failure patients. BMC Cardiovasc Disord. 2014;14:97. <doi:10.1186/1471-2261-14-97>
+
+Sing T, Sander O, Beerenwinkel N, Lengauer T (2005). "ROCR: visualizing classifier performance in R." *Bioinformatics*, *21*(20), 7881. \<URL: <http://rocr.bioinf.mpi-sb.mpg.de>\>
+
+Jerome Friedman, Trevor Hastie, Robert Tibshirani (2010). Regularization Paths for Generalized Linear Models via Coordinate Descent. Journal of Statistical Software, 33(1), 1-22. URL <https://www.jstatsoft.org/v33/i01/>
+
+Gareth James, Daniela Witten, Trevor Hastie and Rob Tibshirani (2021). ISLR: Data for an Introduction to Statistical Learning with Applications in R. R package version 1.4. <https://CRAN.R-project.org/package=ISLR>
+
+Douglas Bates and Martin Maechler (2021). Matrix: Sparse and Dense Matrix Classes and Methods. R package version 1.4-0. <https://CRAN.R-project.org/package=Matrix>
+
+Max Kuhn (2022). caret: Classification and Regression Training. R package version 6.0-92. <https://CRAN.R-project.org/package=caret>
+
+Terry Therneau and Beth Atkinson (2022). rpart: Recursive Partitioning and Regression Trees. R package version 4.1.16. <https://CRAN.R-project.org/package=rpart>
+
+Marvin N. Wright, Andreas Ziegler (2017). ranger: A Fast Implementation of Random Forests for High Dimensional Data in C++ and R. Journal of Statistical Software, 77(1), 1-17. <doi:10.18637/jss.v077.i01>
+
+Sarkar, Deepayan (2008) Lattice: Multivariate Data Visualization with R. Springer, New York. ISBN 978-0-387-75968-5
+
+Ryu AJ, Romero-Brufau S, Qian R, et al. Assessing the Generalizability of a Clinical Machine Learning Model Across Multiple Emergency Departments. Mayo Clinic Proceedings: Innovations, Quality & Outcomes. 2022;6(3):193-199. <doi:10.1016/j.mayocpiqo.2022.03.003>
